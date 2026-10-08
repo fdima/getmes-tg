@@ -1,0 +1,47 @@
+# Шаблон конфигурации. Скопируйте и заполните:
+#   cp config.yaml.example config.yaml
+# config.yaml — секреты (apiId/apiHash, пароли), исключён из git (.gitignore);
+# этот шаблон секретов не содержит и коммитится как есть.
+# Формат по расширению: .yaml/.yml — YAML, .json — JSON;
+# без --config ищется config.yaml → config.yml → config.json.
+
+api:
+  # Аккаунт Telegram: https://my.telegram.org → API development tools
+  apiId: CHANGE_ME           # числовой API ID (integer)
+  apiHash: "CHANGE_ME"       # 32-символьный apiHash
+  sessionFile: session.txt   # файл сессии; создаётся при первом интерактивном входе
+
+db:
+  # Нужен подкомандам db и full; чтобы отключить — положите строку `db: false` рядом
+  driver: mysql
+  host: 127.0.0.1            # в Docker-контейнере — host: mysql (готовая копия: config.docker.yaml)
+  port: 3306
+  user: root
+  password: "CHANGE_ME"      # пароль MySQL; в Docker должен совпадать с MYSQL_ROOT_PASSWORD в .env
+  database: tgexport
+
+channels:
+  # Выгружаемые каналы, минимум один:
+  #   id        — супергруппа вида -100... (из ссылки t.me/c/<id>/<сообщение>) либо @username
+  #   title     — название для заголовков output/*.md и колонки channel_title в БД
+  #   startDate — граница истории первичной заливки (ISO 8601, UTC)
+  - id: "-1000000000000"
+    title: Название канала
+    startDate: "2026-01-01T00:00:00Z"
+
+log:
+  # Необязательна — работают дефолты; `log: false` отключает логи совсем
+  dir: ./logs
+  level: info                # debug | info | warn | error | silent
+  fileMask: getmes-tg_{date}.log  # {date} = YYYY-MM-DD; ротация по дате каждой записи
+
+proxy:
+  # Необязательна. Выключение: удалить секцию, либо `proxy: false`, либо enabled: false.
+  # Прокси-сервер должен пропускать трафик к серверам Telegram.
+  enabled: false
+  host: "CHANGE_ME:1080"     # "ip:порт" одной строкой; либо "ip" + поле port; IPv6: "[::1]:1080"
+  # port: 1080               # только если порта нет в host
+  username: CHANGE_ME        # необязательно, если прокси без авторизации
+  password: CHANGE_ME        # необязательно
+  # socksType: 5             # 5 (SOCKS5, по умолчанию) или 4 (SOCKS4)
+  # timeout: 5               # таймаут подключения к прокси, секунд (по умолчанию 5)

@@ -1,0 +1,36 @@
+# Секреты — никогда не коммитить (шаблон config.yaml.example — без секретов, он коммитится)
+config.yaml
+config.yml
+config.json
+config.docker.yaml
+session.txt
+.env
+.env.*
+!.env.example
+
+# Внутренние рабочие материалы — артефакты агентской разработки
+AGENTS.md
+.opencode/
+PLAN/
+opencode.json
+opencode.jsonc
+
+# Зависимости и артефакты
+node_modules/
+dist/
+.bun-cache/
+
+# Логи (секция log в конфиге)
+logs/
+
+# Результаты выгрузки (данные, не исходники)
+output/
+output-old/
+
+# Чекпоинты режимов (локальное состояние, PLAN/plan 6)
+state/
+
+# Системные файлы
+Thumbs.db
+.DS_Store
+*.log

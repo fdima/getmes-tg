@@ -1,0 +1,27 @@
+# Не тащить в build-контекст зависимости, данные и — главное — секреты
+node_modules
+dist
+.bun-cache
+output
+output-old
+state
+logs
+PLAN
+.git
+.env
+.env.*
+*.log
+
+# Секреты: в образ и контекст не попадают ни при каком сценарии COPY
+config.yaml
+config.yml
+config.json
+config.docker.yaml
+session.txt
+
+# Тесты и служебные файлы в контейнере не нужны
+test-*.mjs
+docker-compose.yml
+Makefile
+README.md
+AGENTS.md

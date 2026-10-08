@@ -1,0 +1,71 @@
+# ===== Раскатка getmes-tg =====
+# Стек: контейнер приложения (busybox crond, задачи каждые 3 минуты —
+# export в output/*.md и db в MySQL) + изолированный MySQL 8 в общей сети.
+#
+# Перед первым запуском (один раз):
+#   1. config.docker.yaml — копия config.yaml с db.host: mysql (уже создана;
+#      при правке основного конфига пересоздать):
+#        sed 's/host: 127.0.0.1/host: mysql/' config.yaml > config.docker.yaml
+#   2. .env — задайте MYSQL_ROOT_PASSWORD (равен db.password в config.docker.yaml)
+#   3. session.txt — должен быть файлом (пустой, если сессия ещё не создана):
+#        touch session.txt
+#
+# Команды:
+#   docker compose up -d --build                 # поднять (cron: */3, export + db)
+#   docker compose logs -f app                    # вывод cron-задач
+#   docker compose run --rm app node export.js help   # разовый запуск
+#   docker compose run --rm app node export.js export # разовая выгрузка сейчас же
+#   docker compose down                           # остановить (volume mysql-data остаётся)
+#   docker compose down -v                        # остановить и удалить базу
+#
+# Переключатели (в environment ниже или в .env):
+#   RUN_EXPORT=1/0 — выгрузка в output/*.md, RUN_DB=1/0 — выгрузка в MySQL,
+#   CRON_SCHEDULE='*/3 * * * *' — расписание, TZ — часовой пояс логов/cron.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: getmes-tg:latest
+    container_name: getmes-tg
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Moscow}
+      CRON_SCHEDULE: "${CRON_SCHEDULE:-*/3 * * * *}"
+      RUN_EXPORT: ${RUN_EXPORT:-1}
+      RUN_DB: ${RUN_DB:-1}
+    volumes:
+      # Внутри контейнера всегда /app/config.yaml, на хосте — config.docker.yaml
+      - ./config.docker.yaml:/app/config.yaml:ro
+      - ./session.txt:/app/session.txt
+      - ./output:/app/output
+      - ./state:/app/state
+      - ./logs:/app/logs
+
+  mysql:
+    image: mysql:8.4
+    container_name: getmes-tg-mysql
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Moscow}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Задайте MYSQL_ROOT_PASSWORD в .env — он должен совпадать с db.password в config.docker.yaml}
+      MYSQL_ROOT_HOST: "%" # доступ к root из контейнера app
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tgexport}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    # Порт наружу не публикуется: 3306 хоста может быть занят вашей
+    # системной MySQL. Доступ к базе из хоста:
+    #   docker compose exec mysql mysql -uroot -p tgexport
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  mysql-data:
