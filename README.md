@@ -298,11 +298,18 @@ bun build ./export.js --compile --target=bun-windows-x64 --outfile dist/getmes-t
 
 | Цель | Платформа |
 |---|---|
-| `make windows` | Windows x64 (.exe) |
-| `make linux` | Linux x64 |
-| `make macos` | macOS Intel |
+| `make windows` | Windows x64 (.exe + zip) |
+| `make linux` | Linux x64 (+ zip) |
+| `make macos` | macOS Intel (+ zip) |
 | `make` | все три сразу |
+| `make sha256` | контрольные суммы артефактов → `dist/SHA256SUMS` |
 | `make clean` | удалить `dist/` |
+
+После сборки каждый бинарь автоматически упаковывается в zip рядом с ним — `dist/getmes-tg-<платформа>[.exe].zip` (максимальное сжатие `-9`, бинарь лежит в корне архива, при пересборке архив обновляется). На Windows без `make`: `Compress-Archive -Path getmes-tg-windows-x64.exe -DestinationPath getmes-tg-windows-x64.exe.zip -Force`.
+
+**Контрольные суммы.** После любой сборки (полной и одиночной платформы) файл `dist/SHA256SUMS` пересоздаётся автоматически; вручную — `make sha256`. По умолчанию хешируются все артефакты `getmes-tg-*` (бинари и zip-архивы), имена записываются без пути, поэтому проверка работает в самом каталоге: `cd dist && sha256sum -c SHA256SUMS` (на macOS — `shasum -a 256 -c SHA256SUMS`). Нужны только zip — сузьте паттерн: `make sha256 SHA256_FILES='getmes-tg-*.zip'`. Прочее содержимое `dist/` (конфиг, сессия, каталоги) в файл не попадает. На Windows (PowerShell): `Get-FileHash getmes-tg-* -Algorithm SHA256 | ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } > SHA256SUMS`.
+
+⚠️ `make clean` удаляет `dist/` целиком: если бинарь запускается из этого каталога (рядом лежат `config.yaml`, `session.txt`, `output/`, `state/`, `logs/`), удалится и всё это — запускайте осознанно.
 
 Сборки под arm64 (`windows-arm64`/`linux-arm64`/`darwin-arm64` и алиасы `windows-arm`/`macos-arm`) **закомментированы в `Makefile`** — чтобы вернуть, раскомментируйте соответствующие цели, включите их в `TARGETS` и строки `.PHONY`.
 
@@ -378,7 +385,7 @@ test-*.mjs       тесты (6 файлов, см. «Тесты»)
 output/*.md      выгруженная история (дописывается)
 state/*.yaml     чекпоинты режимов (создаются автоматически)
 logs/            лог-файлы (создаются автоматически)
-Makefile         сборка бинарей (Bun): цели windows / linux / macos / clean
+Makefile         сборка бинарей (Bun): цели windows / linux / macos / sha256 / clean
 Dockerfile       двухстадийная сборка образа (Alpine, runtime-часть)
 docker-compose.yml  стек раскатки: app (cron) + mysql
 docker/          entrypoint.sh (crond, генерация crontab) + cron.sh (тики)
