@@ -2,6 +2,7 @@
 // Запуск: npm test
 import { validateDbConfig, serializeEntities, buildRow } from "./lib/db.js";
 import { renderMessageText } from "./lib/markdown.js";
+import { buildMaxMessageIdsQuery } from "./lib/mysql.js";
 
 let failed = 0;
 function check(name, actual, expected) {
@@ -9,6 +10,15 @@ function check(name, actual, expected) {
   if (!ok) failed++;
   console.log(`${ok ? "OK  " : "FAIL"} ${name}`);
   if (!ok) console.log(`     ожидалось: ${JSON.stringify(expected)}\n     получено:  ${JSON.stringify(actual)}`);
+}
+
+// 10. Пакетный MAX: один запрос для всех уникальных channel_id
+{
+  const query = buildMaxMessageIdsQuery(["-1001", "-1002", "-1001"]);
+  check("MAX query: уникальные параметры", query.params.join(","), "-1001,-1002");
+  check("MAX query: два placeholder", (query.sql.match(/\?/g) || []).length, 2);
+  check("MAX query: группировка по каналу", query.sql.includes("GROUP BY channel_id"), true);
+  check("MAX query: пустой список без SQL", buildMaxMessageIdsQuery([]).sql, "");
 }
 
 const goodDb = { driver: "mysql", host: "127.0.0.1", user: "root", database: "tgexport" };

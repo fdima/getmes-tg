@@ -29,6 +29,14 @@ channels:
     title: Название канала
     startDate: "2026-01-01T00:00:00Z"
 
+fetch:
+  # Конкурентная вычитка каналов одним Telegram-клиентом.
+  concurrency: 3            # активных каналов: 1–5; 1 = последовательный режим
+  repairConcurrency: 2      # лимит для тяжёлого --repair: 1–5
+  requestIntervalMs: 150    # минимум между стартами Telegram-запросов: 0–5000
+  pageDelayMs: 500          # пауза между страницами одного канала: 0–10000
+  progressIntervalMs: 10000 # heartbeat вне TTY: 1000–60000 мс
+
 log:
   # Необязательна — работают дефолты; `log: false` отключает логи совсем
   dir: ./logs

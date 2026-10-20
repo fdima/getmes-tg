@@ -7,7 +7,7 @@
     "scripts": {
         "export": "node export.js export",
         "help": "node export.js help",
-        "test": "node test-entities.mjs && node test-cli.mjs && node test-db.mjs && node test-proxy.mjs && node test-logger.mjs && node test-state.mjs"
+        "test": "node test-entities.mjs && node test-cli.mjs && node test-db.mjs && node test-proxy.mjs && node test-logger.mjs && node test-state.mjs && node test-fetch.mjs && node test-artifacts.mjs && node test-progress.mjs"
     },
     "dependencies": {
         "input": "^1.0.1",

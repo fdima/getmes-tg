@@ -27,6 +27,27 @@ function check(name, args, expectedStatus, pattern) {
   }
 }
 
+// 15. Повторы каналов: точный дубль допустим и дедуплицируется, конфликт — ошибка
+{
+  const os = await import("os");
+  const fsMod = await import("fs");
+  const conflicting = path.join(os.tmpdir(), "tg-test-conflicting-channels.yaml");
+  fsMod.writeFileSync(conflicting, 'channels:\n  - id: "-1001"\n    title: Первый\n    startDate: "2026-01-01T00:00:00Z"\n  - id: "-1001"\n    title: Другой\n    startDate: "2026-01-01T00:00:00Z"\n', "utf-8");
+  check("channels: один id с разными настройками запрещён", ["export", "--config", conflicting], 1, /повторяется в конфиге с разными/);
+  fsMod.rmSync(conflicting, { force: true });
+}
+
+// 14. Секция fetch валидируется до авторизации Telegram и открытия БД
+{
+  const os = await import("os");
+  const fsMod = await import("fs");
+  const badFetch = path.join(os.tmpdir(), "tg-test-bad-fetch.yaml");
+  fsMod.writeFileSync(badFetch, "fetch:\n  concurrency: 0\nchannels: []\n", "utf-8");
+  check("fetch: неверный concurrency до авторизации", ["export", "--config", badFetch], 1, /fetch\.concurrency/);
+  check("fetch: неверный concurrency до проверки db", ["db", "--config", badFetch], 1, /fetch\.concurrency/);
+  fsMod.rmSync(badFetch, { force: true });
+}
+
 // 1. Без параметров — приветствие со списком параметров, exit 0 (1.6)
 check("нет параметров → справка", [], 0, /Подкоманды/);
 check("нет параметров → перечислены export и send", [], 0, /export[\s\S]*send/);
@@ -215,6 +236,27 @@ check(
   const ok = res.status === 0 && count === 3 && res.error === undefined;
   if (!ok) failed++;
   console.log(`${ok ? "OK  " : "FAIL"} справка: --repair ровно трижды (export, db, full)`);
+  if (!ok) console.log(`     найдено упоминаний: ${count}, ожидалось: 3, exit ${res.status}`);
+}
+
+// 16. Режим прогресса (plan 10): только export/db/full, строгие значения.
+{
+  check("справка: --progress виден", ["help"], 0, /--progress <режим>/);
+  for (const command of ["export", "db", "full"]) {
+    check(
+      `${command} --progress off принимается`,
+      [command, "--progress", "off", "--channel", "нет-такого-канала"],
+      1,
+      /не найден/
+    );
+  }
+  check("send --progress запрещён", ["send", "--progress", "off"], 1, /не поддерживается/);
+  check("неизвестный режим progress отклоняется", ["export", "--progress", "detailed"], 1, /некорректный режим --progress/);
+  const res = spawnSync(process.execPath, [ENTRY, "help"], { encoding: "utf-8", timeout: 20000 });
+  const count = ((res.stdout || "").match(/--progress/g) || []).length;
+  const ok = res.status === 0 && count === 3 && res.error === undefined;
+  if (!ok) failed++;
+  console.log(`${ok ? "OK  " : "FAIL"} справка: --progress ровно трижды (export, db, full)`);
   if (!ok) console.log(`     найдено упоминаний: ${count}, ожидалось: 3, exit ${res.status}`);
 }
 

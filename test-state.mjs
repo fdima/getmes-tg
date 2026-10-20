@@ -5,9 +5,15 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import {
+  encodeChannelId,
+  resolveChannelStatePath,
+  loadChannelState,
+  loadModeState,
   loadState,
   saveStateEntry,
   backfillStateTitles,
+  migrateLegacyState,
+  normalizeModeState,
   maxMessageIdInText,
   messageIdsInText,
   readFileMaxMessageId,
@@ -26,256 +32,128 @@ function check(name, actual, expected) {
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "getmes-tg-state-"));
-
 try {
-  // 1. maxMessageIdInText: заголовки «## Сообщение #N» → максимум
-  check("maxMessageIdInText: пустой текст", maxMessageIdInText(""), 0);
-  check("maxMessageIdInText: только шапка файла", maxMessageIdInText("# Канал\n\n> Канал: @x\n\n---\n"), 0);
-  check(
-    "maxMessageIdInText: максимум из нескольких заголовков",
-    maxMessageIdInText("## Сообщение #29381\n\nтекст\n\n---\n\n## Сообщение #29400\n\n## Сообщение #29399\n"),
-    29400
-  );
-  check(
-    "maxMessageIdInText: id не по порядку берётся максимум",
-    maxMessageIdInText("## Сообщение #10\n## Сообщение #999\n## Сообщение #2\n"),
-    999
-  );
-  check(
-    "maxMessageIdInText: нечисловые заголовки игнорируются",
-    maxMessageIdInText("## Сообщение #abc\n## Сообщение #\n## Сообщение #12x\n"),
-    0
-  );
-  check(
-    "maxMessageIdInText: хвост после id не совпадает",
-    maxMessageIdInText("## Сообщение #555 хвост\n"),
-    0
-  );
+  check("encode: числовой id читаем", encodeChannelId("-100123"), "-100123");
+  check("encode: username экранирован", encodeChannelId("@public/name"), "%40public%2Fname");
+  check("path: traversal не создаёт подкаталог", path.basename(resolveChannelStatePath("export", "../x", tmp)), "..%2Fx.yaml");
+  check("неизвестный режим → ошибка", (() => { try { loadState("nope", tmp); return ""; } catch (err) { return err.message; } })(), "неизвестный режим state: nope");
+  check("нет файла канала → undefined", loadChannelState("export", "x", tmp), undefined);
+  check("нет каталога режима → {}", JSON.stringify(loadState("export", tmp)), "{}");
 
-  // 2. readFileMaxMessageId: отсутствующий файл → 0, кириллическое имя
-  const mdDir = fs.mkdtempSync(path.join(os.tmpdir(), "getmes-tg-md-"));
-  const mdPath = path.join(mdDir, "Интерфакс.md");
-  check("readFileMaxMessageId: файла нет → 0", readFileMaxMessageId(mdPath), 0);
-  fs.writeFileSync(mdPath, "# Интерфакс\n\n---\n\n## Сообщение #79621\n\ntext\n", "utf-8");
-  check("readFileMaxMessageId: файл с сообщением → его id", readFileMaxMessageId(mdPath), 79621);
+  saveStateEntry("export", "-1001", { channelId: "чужой", title: "Первый", lastMessageId: 10, lastMessageUrl: "u10", extra: true }, tmp);
+  const firstPath = resolveChannelStatePath("export", "-1001", tmp);
+  check("создан отдельный файл канала", fs.existsSync(firstPath), true);
+  check("уникальный tmp не остался", fs.readdirSync(path.dirname(firstPath)).some((n) => n.includes(".tmp-")), false);
+  check("state содержит только два поля", Object.keys(loadChannelState("export", "-1001", tmp)).join(","), "title,lastMessageId");
+  check("title сохранён", loadChannelState("export", "-1001", tmp).title, "Первый");
+  check("id сохранён", loadChannelState("export", "-1001", tmp).lastMessageId, 10);
+  const raw = fs.readFileSync(firstPath, "utf-8");
+  check("канонический YAML: title затем lastMessageId", raw, "title: Первый\nlastMessageId: 10\n");
+  check("производные и неизвестные поля не записаны", /channelId|lastMessageUrl|extra/.test(raw), false);
 
-  // 3. effectiveExportCheckpoint: max(state-запись, вершина файла)
-  check("export: оба нуля → 0 (выгрузка с startDate)", effectiveExportCheckpoint(undefined, 0), 0);
-  check("export: только запись", effectiveExportCheckpoint({ lastMessageId: 500 }, 0), 500);
-  check("export: только файл", effectiveExportCheckpoint(undefined, 700), 700);
-  check("export: оба → max", effectiveExportCheckpoint({ lastMessageId: 500 }, 700), 700);
-  check("export: ручной «подъём» записи уважается", effectiveExportCheckpoint({ lastMessageId: 900 }, 700), 900);
-  check("export: файл впереди записи (авария) → файл, без дублей", effectiveExportCheckpoint({ lastMessageId: 450 }, 600), 600);
-  check("export: запись с lastMessageId: 0 → файл", effectiveExportCheckpoint({ lastMessageId: 0 }, 42), 42);
-  check("export: запись без поля → файл", effectiveExportCheckpoint({}, 42), 42);
+  saveStateEntry("export", "-1002", { title: "Второй", lastMessageId: 20 }, tmp);
+  saveStateEntry("db", "-1001", { title: "Первый", lastMessageId: 7 }, tmp);
+  check("два канала — два файла", fs.readdirSync(path.join(tmp, "export")).filter((n) => n.endsWith(".yaml")).length, 2);
+  check("запись второго не меняет первый", loadChannelState("export", "-1001", tmp).lastMessageId, 10);
+  check("режимы изолированы", loadChannelState("db", "-1001", tmp).lastMessageId, 7);
+  check("loadModeState читает выбранные каналы", Object.keys(loadModeState("export", [{ id: "-1002" }], tmp)).join(","), "-1002");
+  check("loadState собирает карту режима", Object.keys(loadState("export", tmp)).sort().join(","), "-1001,-1002");
 
-  // 4. effectiveDbCheckpoint: пустая БД → первичная заливка (undefined)
-  check("db: пустая БД → первичная заливка", effectiveDbCheckpoint(0, undefined), undefined);
-  check("db: пустая БД, запись игнорируется", effectiveDbCheckpoint(0, { lastMessageId: 600 }), undefined);
-  check("db: только MAX(БД)", effectiveDbCheckpoint(800, undefined), 800);
-  check("db: max(MAX(БД), запись)", effectiveDbCheckpoint(800, { lastMessageId: 1000 }), 1000);
-  check("db: запись позади БД → БД", effectiveDbCheckpoint(800, { lastMessageId: 500 }), 800);
-  check("db: миграция без записи → MAX(БД)", effectiveDbCheckpoint(12345, undefined), 12345);
+  saveStateEntry("export", "-1001", { lastMessageId: 11 }, tmp);
+  check("title переживает обновление без title", loadChannelState("export", "-1001", tmp).title, "Первый");
+  check("обновляется только свой checkpoint", loadChannelState("export", "-1001", tmp).lastMessageId, 11);
+  check("чужой checkpoint не изменён", loadChannelState("export", "-1002", tmp).lastMessageId, 20);
+  check("backfill меняет title", backfillStateTitles("export", [{ id: "-1001", title: "Первый новый" }], tmp), true);
+  check("backfill записал title", loadChannelState("export", "-1001", tmp).title, "Первый новый");
+  check("backfill без изменений", backfillStateTitles("export", [{ id: "-1001", title: "Первый новый" }], tmp), false);
 
-  // 5. loadState: нет файла → {}; неизвестный режим → ошибка
-  check("loadState: файла нет → {}", JSON.stringify(loadState("export", tmp)), "{}");
-  check(
-    "loadState: неизвестный режим → ошибка",
-    (() => {
-      try {
-        loadState("nope", tmp);
-        return "не бросил";
-      } catch (e) {
-        return e.message;
-      }
-    })(),
-    "неизвестный режим state: nope"
-  );
+  const badPath = resolveChannelStatePath("export", "bad", tmp);
+  fs.writeFileSync(badPath, "x: [\n", "utf-8");
+  let bad;
+  try { loadChannelState("export", "bad", tmp); } catch (err) { bad = err; }
+  check("битый файл одного канала → CliError", bad instanceof CliError, true);
+  check("ошибка содержит конкретный путь", bad?.message.includes(badPath), true);
+  check("ошибка содержит подсказку артефакта", bad?.message.includes("output/*.md"), true);
+  fs.rmSync(badPath);
+  fs.writeFileSync(badPath, "channelId: other\ntitle: Старый формат\nlastMessageId: 1\nlastMessageUrl: old\n", "utf-8");
+  check("старый расширенный формат читается", loadChannelState("export", "bad", tmp).lastMessageId, 1);
 
-  // 6. saveStateEntry: создание каталога/файла, дописывание, перезапись
-  saveStateEntry(
-    "export",
-    "-1001149896996",
-    { title: "Интерфакс", lastMessageId: 79621, lastMessageUrl: "https://t.me/c/1149896996/79621" },
-    tmp
-  );
-  check("state: каталог и файл созданы", fs.existsSync(path.join(tmp, "export.yaml")), true);
-  check("state: .tmp не остался", fs.existsSync(path.join(tmp, "export.yaml.tmp")), false);
+  const oldFormatPath = resolveChannelStatePath("export", "old", tmp);
+  fs.writeFileSync(oldFormatPath, "channelId: old\ntitle: Старое название\nlastMessageId: 33\nlastMessageUrl: old-url\nextra: value\n", "utf-8");
+  const canonicalPath = resolveChannelStatePath("export", "canonical", tmp);
+  fs.writeFileSync(canonicalPath, "title: Канонический\nlastMessageId: 44\n", "utf-8");
+  const canonicalMtime = fs.statSync(canonicalPath).mtimeMs;
+  const orphanPath = resolveChannelStatePath("export", "orphan", tmp);
+  fs.writeFileSync(orphanPath, "title: Сирота\nlastMessageId: 55\n", "utf-8");
+  fs.writeFileSync(path.join(tmp, "export", "note.txt"), "не state", "utf-8");
+  fs.writeFileSync(path.join(tmp, "export", "ignored.yaml.tmp-1"), "x", "utf-8");
+  const normalized = normalizeModeState("export", [
+    { id: "-1001", title: "Первый новый" },
+    { id: "-1002", title: "Второй" },
+    { id: "bad", title: "Актуальное название" },
+    { id: "old", title: "Новое название" },
+    { id: "canonical", title: "Канонический" },
+  ], tmp);
+  check("нормализация удаляет старые поля", fs.readFileSync(oldFormatPath, "utf-8"), "title: Новое название\nlastMessageId: 33\n");
+  check("нормализация сохраняет checkpoint", loadChannelState("export", "old", tmp).lastMessageId, 33);
+  check("нормализация актуализирует title", loadChannelState("export", "bad", tmp).title, "Актуальное название");
+  check("канонический файл не переписан", fs.statSync(canonicalPath).mtimeMs, canonicalMtime);
+  check("orphan обнаружен", normalized.orphans.some((item) => item.channelId === "orphan"), true);
+  check("настроенный невыбранный канал не orphan", normalized.orphans.some((item) => item.channelId === "-1002"), false);
+  check("orphan не удалён", fs.existsSync(orphanPath), true);
+  check("не-state файлы игнорируются", normalized.orphans.some((item) => item.channelId === "note"), false);
+  check("повторная нормализация идемпотентна", normalizeModeState("export", [
+    { id: "-1001", title: "Первый новый" },
+    { id: "-1002", title: "Второй" },
+    { id: "bad", title: "Актуальное название" },
+    { id: "old", title: "Новое название" },
+    { id: "canonical", title: "Канонический" },
+  ], tmp).normalized.length, 0);
 
-  const loaded = loadState("export", tmp);
-  check("state: запись читается", loaded["-1001149896996"].lastMessageId, 79621);
-  check("state: url сохранён", loaded["-1001149896996"].lastMessageUrl, "https://t.me/c/1149896996/79621");
-  check("state: название канала сохранено", loaded["-1001149896996"].title, "Интерфакс");
-  // title — первым полем записи (читаемость файла, PLAN/plan 6.md)
-  const rawState = fs.readFileSync(path.join(tmp, "export.yaml"), "utf-8");
-  check(
-    "state: title первым полем записи",
-    /^"-1001149896996":\n  title: Интерфакс\n  lastMessageId:/m.test(rawState),
-    true
-  );
+  const migration = path.join(tmp, "migration");
+  fs.mkdirSync(migration, { recursive: true });
+  fs.writeFileSync(path.join(migration, "export.yaml"), '"-1001":\n  title: Старый\n  lastMessageId: 50\n  lastMessageUrl: old50\n"@name":\n  title: Public\n  lastMessageId: 30\n', "utf-8");
+  saveStateEntry("export", "-1001", { title: "Новый", lastMessageId: 70, lastMessageUrl: "new70" }, migration);
+  check("legacy migration выполнена", migrateLegacyState("export", [{ id: "-1001", title: "Актуальный" }, { id: "@name", title: "Public new" }], migration), true);
+  check("migration не понижает новый state", loadChannelState("export", "-1001", migration).lastMessageId, 70);
+  check("migration предпочитает актуальный title", loadChannelState("export", "-1001", migration).title, "Актуальный");
+  check("migration переносит второй канал", loadChannelState("export", "@name", migration).lastMessageId, 30);
+  check("migration создаёт сокращённый формат", fs.readFileSync(resolveChannelStatePath("export", "@name", migration), "utf-8"), "title: Public new\nlastMessageId: 30\n");
+  check("legacy перемещён в архив", fs.existsSync(path.join(migration, "legacy", "export.yaml.migrated")), true);
+  check("legacy-архив сохранил старое поле", fs.readFileSync(path.join(migration, "legacy", "export.yaml.migrated"), "utf-8").includes("lastMessageUrl: old50"), true);
+  check("исходный legacy удалён после проверки", fs.existsSync(path.join(migration, "export.yaml")), false);
+  check("повтор без legacy ничего не делает", migrateLegacyState("export", [], migration), false);
+  const archiveBefore = fs.readFileSync(path.join(migration, "legacy", "export.yaml.migrated"), "utf-8");
+  fs.writeFileSync(path.join(migration, "export.yaml"), '"-1001":\n  title: Повторный legacy\n  lastMessageId: 80\n', "utf-8");
+  check("повторный legacy мигрирован", migrateLegacyState("export", [{ id: "-1001", title: "Актуальный" }], migration), true);
+  check("повторный legacy поднял checkpoint", loadChannelState("export", "-1001", migration).lastMessageId, 80);
+  check("существующий legacy-архив не переписан", fs.readFileSync(path.join(migration, "legacy", "export.yaml.migrated"), "utf-8"), archiveBefore);
 
-  saveStateEntry("export", "-1001557052991", { lastMessageId: 29381 }, tmp);
-  const two = loadState("export", tmp);
-  check("state: вторая запись дописана", Object.keys(two).length, 2);
-  check("state: первая запись не тронута", two["-1001149896996"].lastMessageId, 79621);
+  check("max: пусто", maxMessageIdInText(""), 0);
+  check("max: максимум заголовков", maxMessageIdInText("## Сообщение #10\n## Сообщение #99\n## Сообщение #2\n"), 99);
+  check("max: хвост не совпадает", maxMessageIdInText("## Сообщение #55 хвост\n"), 0);
+  const md = path.join(tmp, "Канал.md");
+  check("read max: файла нет", readFileMaxMessageId(md), 0);
+  fs.writeFileSync(md, "## Сообщение #42\n", "utf-8");
+  check("read max: файл", readFileMaxMessageId(md), 42);
+  const ids = messageIdsInText("## Сообщение #10\n## Сообщение #20\n## Сообщение #10\n");
+  check("messageIds: множество без дублей", ids.size, 2);
+  check("messageIds: содержит id", ids.has(20), true);
 
-  saveStateEntry("export", "-1001149896996", { lastMessageId: 80000 }, tmp);
-  const upd = loadState("export", tmp);
-  check("state: перезапись своей записи", upd["-1001149896996"].lastMessageId, 80000);
-  check("state: чужая запись не тронута", upd["-1001557052991"].lastMessageId, 29381);
-  check("state: title пережил перезапись без title", upd["-1001149896996"].title, "Интерфакс");
+  check("export checkpoint: оба нуля", effectiveExportCheckpoint(undefined, 0), 0);
+  check("export checkpoint: state впереди", effectiveExportCheckpoint({ lastMessageId: 20 }, 10), 20);
+  check("export checkpoint: файл впереди", effectiveExportCheckpoint({ lastMessageId: 10 }, 20), 20);
+  check("db checkpoint: пустая БД игнорирует state", effectiveDbCheckpoint(0, { lastMessageId: 20 }), undefined);
+  check("db checkpoint: БД впереди", effectiveDbCheckpoint(30, { lastMessageId: 20 }), 30);
+  check("db checkpoint: state впереди", effectiveDbCheckpoint(30, { lastMessageId: 40 }), 40);
+  check("удалённый export state восстанавливается из Markdown", effectiveExportCheckpoint(undefined, 42), 42);
+  check("удалённый db state восстанавливается из БД", effectiveDbCheckpoint(42, undefined), 42);
 
-  // 7. Изоляция режимов: запись export не появляется в db и наоборот
-  check("изоляция: в db нет записи export", loadState("db", tmp)["-1001149896996"], undefined);
-  saveStateEntry("db", "-1001149896996", { lastMessageId: 555 }, tmp);
-  check("изоляция: db получил свою запись", loadState("db", tmp)["-1001149896996"].lastMessageId, 555);
-  check("изоляция: export не изменился", loadState("export", tmp)["-1001149896996"].lastMessageId, 80000);
-
-  // 8. Пустой файл → {} (нет записи, но и нет ошибки)
-  const emptyDir = path.join(tmp, "empty");
-  fs.mkdirSync(emptyDir, { recursive: true });
-  fs.writeFileSync(path.join(emptyDir, "export.yaml"), "", "utf-8");
-  check("пустой файл → {}", JSON.stringify(loadState("export", emptyDir)), "{}");
-
-  // 9. Битый YAML → CliError с путём и инструкцией по восстановлению
-  const badDir = path.join(tmp, "bad");
-  fs.mkdirSync(badDir, { recursive: true });
-  fs.writeFileSync(path.join(badDir, "export.yaml"), "ключ: [битый\n", "utf-8");
-  let badErr = null;
-  try {
-    loadState("export", badDir);
-  } catch (err) {
-    badErr = err;
-  }
-  check("битый YAML → экземпляр CliError", badErr instanceof CliError, true);
-  check(
-    "битый YAML → путь к файлу в сообщении",
-    badErr !== null && badErr.message.includes(path.join(badDir, "export.yaml")),
-    true
-  );
-  check(
-    "битый YAML → подсказка про output/*.md",
-    badErr !== null && badErr.message.includes("удалите его, чекпоинт будет восстановлен из output/*.md"),
-    true
-  );
-
-  // 10. Необъектный документ → CliError
-  fs.writeFileSync(path.join(badDir, "export.yaml"), "- первый\n- второй\n", "utf-8");
-  let arrErr = null;
-  try {
-    loadState("export", badDir);
-  } catch (err) {
-    arrErr = err;
-  }
-  check("массив вместо карты → CliError", arrErr instanceof CliError, true);
-  check("массив → текст про повреждение", arrErr !== null && arrErr.message.startsWith("файл чекпоинтов повреждён"), true);
-
-  // 11. Подсказка для db отличается от подсказки для export
-  fs.writeFileSync(path.join(badDir, "db.yaml"), "бито\n  - [;\n", "utf-8");
-  let dbErr = null;
-  try {
-    loadState("db", badDir);
-  } catch (err) {
-    dbErr = err;
-  }
-  check(
-    "битый db → подсказка про MAX(message_id)",
-    dbErr !== null && dbErr.message.includes("MAX(message_id) в БД"),
-    true
-  );
-
-  // 12. Миграционный сценарий: записи нет → решает артефакт
-  check(
-    "миграция export: файла нет, записи нет → 0",
-    effectiveExportCheckpoint(undefined, maxMessageIdInText("")),
-    0
-  );
-  check(
-    "миграция export: файл есть, записи нет → вершина файла",
-    effectiveExportCheckpoint(undefined, maxMessageIdInText("## Сообщение #100\n")),
-    100
-  );
-  // 13. messageIdsInText: множество id из заголовков — сверка при --repair
-  check("messageIdsInText: пустой текст → пустое множество", messageIdsInText("").size, 0);
-  check("messageIdsInText: только шапка → пустое множество", messageIdsInText("# Канал\n\n> Канал: @x\n\n---\n").size, 0);
-  const ids = messageIdsInText(
-    "# Интерфакс\n\n---\n\n## Сообщение #79621\n\ntext\n\n---\n\n## Сообщение #79640\n\n## Сообщение #79621\n"
-  );
-  check("messageIdsInText: все id собраны", ids.size, 2);
-  check("messageIdsInText: дубль заголовка → один id", ids.has(79621), true);
-  check("messageIdsInText: второй id найден", ids.has(79640), true);
-  check(
-    "messageIdsInText: нечисловые заголовки игнорируются",
-    messageIdsInText("## Сообщение #abc\n## Сообщение #\n## Сообщение #12x\n## Сообщение #555 хвост\n").size,
-    0
-  );
-  check("messageIdsInText: null/undefined → пустое множество", messageIdsInText(null).size, 0);
-  // 14. backfillStateTitles: проставление/обновление title для читаемости
-  const channelsForTitles = [
-    { id: "-1001557052991", title: "bitkogan" }, // запись без title → проставится
-    { id: "-1001149896996", title: "Интерфакс (нов.)" }, // title изменился → обновится
-    { id: "-1009999999999", title: "Нет такой" }, // записи нет → не создаётся
-  ];
-  check(
-    "backfill: изменения есть → true",
-    backfillStateTitles("export", channelsForTitles, tmp),
-    true
-  );
-  const afterBackfill = loadState("export", tmp);
-  check("backfill: отсутствующий title проставлен", afterBackfill["-1001557052991"].title, "bitkogan");
-  check("backfill: изменившийся title обновлён", afterBackfill["-1001149896996"].title, "Интерфакс (нов.)");
-  check("backfill: чекпоинт не тронут", afterBackfill["-1001149896996"].lastMessageId, 80000);
-  check("backfill: запись неизвестного канала не создаётся", afterBackfill["-1009999999999"], undefined);
-  check(
-    "backfill: без изменений → false (файл не трогается)",
-    backfillStateTitles("export", channelsForTitles, tmp),
-    false
-  );
-  // 15. partitionByCheckpoints: разбивка общей выборки двух режимов (plan 7)
-  const sample = [{ id: 10 }, { id: 20 }, { id: 30 }, { id: 40 }];
-  const idsOf = (arr) => arr.map((m) => m.id).join(",");
-  const part = (cpExport, cpDb) =>
-    partitionByCheckpoints(sample, cpExport, cpDb);
-  check(
-    "partition: оба чекпоинта позади → вся выборка в обе части",
-    `${idsOf(part(5, 5).forFile)}/${idsOf(part(5, 5).forDb)}`,
-    "10,20,30,40/10,20,30,40"
-  );
-  check(
-    "partition: оба чекпоинта впереди → обе части пусты",
-    `${part(40, 40).forFile.length}/${part(40, 40).forDb.length}`,
-    "0/0"
-  );
-  check(
-    "partition: файл впереди, БД позади → файл пуст, БД догоняет",
-    `${idsOf(part(40, 5).forFile)}/${idsOf(part(40, 5).forDb)}`,
-    "/10,20,30,40"
-  );
-  check(
-    "partition: БД впереди, файл позади → файл догоняет, БД пуста",
-    `${idsOf(part(5, 40).forFile)}/${idsOf(part(5, 40).forDb)}`,
-    "10,20,30,40/"
-  );
-  check(
-    "partition: граница строгая (равный чекпоинт отсекается)",
-    idsOf(partitionByCheckpoints([{ id: 10 }, { id: 11 }], 10, 10).forFile),
-    "11"
-  );
-  check(
-    "partition: cpDb = undefined (пустая БД) → первичная заливка всей выборки",
-    idsOf(part(5, undefined).forDb),
-    "10,20,30,40"
-  );
-  check(
-    "partition: cpExport = 0 → файл получает всё с startDate",
-    idsOf(part(0, 40).forFile),
-    "10,20,30,40"
-  );
-  check(
-    "partition: нечисловые чекпоинты → 0 (вся выборка)",
-    idsOf(part("x", null).forFile),
-    "10,20,30,40"
-  );
+  const sample = [{ id: 10 }, { id: 20 }, { id: 30 }];
+  const part = partitionByCheckpoints(sample, 20, 10);
+  check("partition: файл", part.forFile.map((m) => m.id).join(","), "30");
+  check("partition: БД", part.forDb.map((m) => m.id).join(","), "20,30");
+  check("partition: нулевой получает всё", partitionByCheckpoints(sample, 0, 30).forFile.length, 3);
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

@@ -14,6 +14,20 @@ function check(name, actual, expected) {
   if (!ok) console.log(`     ожидалось: ${JSON.stringify(expected)}\n     получено:  ${JSON.stringify(actual)}`);
 }
 
+// 9. Child logger: явный контекст режима/канала/фазы не смешивается
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tg-log-"));
+  const mask = "c_{date}.log";
+  const logger = createLogger({ dir: tmp, level: "info", fileMask: mask });
+  logger.child({ mode: "full", channelId: "-1001", channelTitle: "Первый" }).info("fetch", "страница 1");
+  logger.child({ mode: "full", channelId: "-1002", channelTitle: "Второй" }).error("mysql", "ошибка");
+  const content = fs.readFileSync(resolveLogFileName(tmp, mask), "utf-8");
+  check("child: контекст первого канала", content.includes("[full] [channel=-1001] [Первый] [fetch] страница 1"), true);
+  check("child: контекст второго канала", content.includes("[full] [channel=-1002] [Второй] [mysql] ошибка"), true);
+  check("child: контексты не склеены", content.includes("[channel=-1001] [Второй]"), false);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 // 1. Имя файла: {date} подставляется как YYYY-MM-DD
 const day = new Date(2026, 9, 3); // 03.10.2026
 check(
